@@ -82,8 +82,9 @@ public class MyLogcat extends Service{
         try {
             factory.setUsername("contract");
             factory.setPassword("contract");
-            factory.setVirtualHost("192.168.0.246");
-            factory.setHost("192.168.0.246");
+            factory.setVirtualHost("61.16.137.43");
+            factory.setHost("61.16.137.43");
+
         } catch (Exception e1) {
             e1.printStackTrace();
         }
