@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.AsyncTask;
+import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.support.annotation.Nullable;
@@ -120,6 +121,7 @@ public class MyLogcat extends Service{
                                 params.put("unitno", IMEINO1);
                                 params.put("time", currentDateTimeString);
                                 jsonObject = new JSONObject(params);
+                                //Log.v("sending To RabbitMq","jsonObject : "+jsonObject.toString());
                                 savePollingDateToDB(jsonObject);
                             }
                             if (checkNetwork.haveNetworkConnection()) {
@@ -193,6 +195,7 @@ public class MyLogcat extends Service{
         try {
 
             for (int i = 0; i < saveValuesList.size(); i++) {
+                //Log.v("sending To RabbitMq","Here : "+saveValuesList.get(i).getRequestString().toString());
                 channel.basicPublish("LogData", "AppLogcatLogs", null, saveValuesList.get(i).getRequestString().toString().getBytes());
                 dbHandler.deleteData(saveValuesList.get(i).getId());
             }
@@ -232,17 +235,29 @@ public class MyLogcat extends Service{
 
     @TargetApi(23)
     void getID() {
-        TelephonyManager manager = (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
-            // TODO: Consider calling
-            //    ActivityCompat#requestPermissions
-            // here to request the missing permissions, and then overriding
-            //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
-            //                                          int[] grantResults)
-            // to handle the case where the user grants the permission. See the documentation
-            // for ActivityCompat#requestPermissions for more details.
-            return;
+        try {
+            TelephonyManager manager = (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
+            if (manager != null) {
+                if (ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+                    // TODO: Consider calling
+                    //    ActivityCompat#requestPermissions
+                    // here to request the missing permissions, and then overriding
+                    //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                    //                                          int[] grantResults)
+                    // to handle the case where the user grants the permission. See the documentation
+                    // for ActivityCompat#requestPermissions for more details.
+                    return;
+                }
+                if (Build.VERSION.SDK_INT >= 23) {
+                    IMEINO1 = manager.getDeviceId(0);
+                }
+                else {
+                    IMEINO1 = manager.getDeviceId();
+                }
+            }
         }
-        IMEINO1 = manager.getDeviceId(0);
+        catch (Exception e){
+            e.printStackTrace();
+        }
     }
 }
