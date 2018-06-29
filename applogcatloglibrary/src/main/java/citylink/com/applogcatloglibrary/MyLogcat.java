@@ -3,10 +3,14 @@ package citylink.com.applogcatloglibrary;
 import android.Manifest;
 import android.annotation.TargetApi;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.os.AsyncTask;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -14,11 +18,13 @@ import android.support.annotation.Nullable;
 import android.support.v4.app.ActivityCompat;
 import android.telephony.TelephonyManager;
 import android.util.Log;
-import android.widget.Toast;
+
 import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.Connection;
 import com.rabbitmq.client.ConnectionFactory;
+
 import org.json.JSONObject;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -49,6 +55,17 @@ public class MyLogcat extends Service{
     static CheckNetwork checkNetwork;
     private static Connection connection;
     private static Channel channel;
+    static String applicationPackageName;
+    static Context context;
+    AppDeviceInfo appDeviceInfo;
+
+    public static void init(Context ctx,String packageName){
+        Log.v("My Application Is ","Here1 : "+packageName);
+        applicationPackageName = packageName;
+        context = ctx;
+        new MyLogcat();
+    }
+
 
     @Override
     public void onCreate() {
@@ -56,6 +73,7 @@ public class MyLogcat extends Service{
         mCtx=getApplicationContext();
         checkNetwork = new CheckNetwork(mCtx);
         dbHandler = new DBHandler(mCtx, null, null, 1);
+        appDeviceInfo = PrefUtilsInfo.getAppDeviceInfo(getApplicationContext());
         setupConnectionFactory();
     }
 
@@ -66,8 +84,12 @@ public class MyLogcat extends Service{
         return START_STICKY;
     }
 
-    public MyLogcat() {
 
+    public MyLogcat() {
+        if(context!=null) {
+            Intent intent = new Intent(context, MyLogcat.class);
+            context.startService(intent);
+        }
     }
 
     public void execute(){
@@ -75,7 +97,6 @@ public class MyLogcat extends Service{
         checkNetwork = new CheckNetwork(mCtx);
         dbHandler = new DBHandler(mCtx, null, null, 1);
         startTimer();
-       //Thread.setDefaultUncaughtExceptionHandler(handleAppCrash);
     }
 
     static ConnectionFactory factory = new ConnectionFactory();
@@ -103,6 +124,11 @@ public class MyLogcat extends Service{
                 handler.post(new Runnable() {
                     public void run() {
                         try {
+                            if(appDeviceInfo==null) {
+                                appDeviceInfo = new AppDeviceInfo();
+                                getAllApplicationPackageInformation();
+                            }
+
                             Process process = Runtime.getRuntime().exec("logcat -d");
 
                             BufferedReader bufferedReader = new BufferedReader(
@@ -114,14 +140,26 @@ public class MyLogcat extends Service{
                                 log.append(line);
                             }
                             if(log.length()>0) {
-                                getID();
+                                batteryLevel();
+                                appDeviceInfo = PrefUtilsInfo.getAppDeviceInfo(MyLogcat.this);
                                 String currentDateTimeString = DateFormat.getDateTimeInstance().format(new Date());
                                 LinkedHashMap<String, String> params = new LinkedHashMap<>();
                                 params.put("logString", log.toString());
-                                params.put("unitno", IMEINO1);
-                                params.put("time", currentDateTimeString);
+                                params.put("packageName",appDeviceInfo.getPackageName());
+                                params.put("appName",appDeviceInfo.getAppName());
+                                params.put("appVersion",appDeviceInfo.getAppVersion());
+                                params.put("apiLevel",appDeviceInfo.getApiLevel());
+                                params.put("manufacturer",appDeviceInfo.getManufacturer());
+                                params.put("deviceModel",appDeviceInfo.getDeviceModel());
+                                params.put("androidOS",appDeviceInfo.getAndroidOS());
+                                params.put("brand",appDeviceInfo.getBrand());
+                                params.put("unitno", appDeviceInfo.getUnitNo());
+                                params.put("carrierName", appDeviceInfo.getCarrierName());
+                                params.put("batteryLevel", batteryLevel);
+                                params.put("currenttime", currentDateTimeString);
+                                params.put("chargePlug", String.valueOf(chargePlug));
+
                                 jsonObject = new JSONObject(params);
-                                //Log.v("sending To RabbitMq","jsonObject : "+jsonObject.toString());
                                 savePollingDateToDB(jsonObject);
                             }
                             if (checkNetwork.haveNetworkConnection()) {
@@ -166,6 +204,35 @@ public class MyLogcat extends Service{
         return null;
     }
 
+    String carrierName;
+    private void getAllApplicationPackageInformation() {
+        try {
+            getID();
+            TelephonyManager manager = (TelephonyManager)context.getSystemService(Context.TELEPHONY_SERVICE);
+            if(manager!=null) {
+                carrierName = manager.getNetworkOperatorName();
+            }
+
+            PackageInfo pInfo = this.getPackageManager().getPackageInfo(applicationPackageName, PackageManager.GET_META_DATA);
+
+            appDeviceInfo.setPackageName(pInfo.packageName);
+            appDeviceInfo.setAppName(pInfo.packageName);
+            appDeviceInfo.setAppVersion(pInfo.versionName);
+            appDeviceInfo.setApiLevel(String.valueOf(android.os.Build.VERSION.SDK_INT));
+            appDeviceInfo.setManufacturer(Build.MANUFACTURER);
+            appDeviceInfo.setDeviceModel(Build.MODEL);
+            appDeviceInfo.setAndroidOS(android.os.Build.VERSION.RELEASE);
+            appDeviceInfo.setBrand(Build.BRAND);
+            appDeviceInfo.setUnitNo(IMEINO1);
+            appDeviceInfo.setCarrierName(carrierName);
+
+            PrefUtilsInfo.setAppDeviceInfo(appDeviceInfo,MyLogcat.this);
+
+        } catch (PackageManager.NameNotFoundException e1) {
+            Log.e(this.getClass().getSimpleName(), "Name not found", e1);
+        }
+    }
+
     public static class ConnectToRabbitMQTask extends AsyncTask<String, Void, String> {
 
         @Override
@@ -193,41 +260,59 @@ public class MyLogcat extends Service{
 
     private static void sendLogDatatoRabbitMq() {
         try {
+            if(saveValuesList!=null) {
+                for (int i = 0; i < saveValuesList.size(); i++) {
+                    channel.basicPublish("LogData", "AppLogcatLogs", null, saveValuesList.get(i).getRequestString().toString().getBytes());
+                    dbHandler.deleteData(saveValuesList.get(i).getId());
+                }
+                saveValuesList = dbHandler.getPackets();
 
-            for (int i = 0; i < saveValuesList.size(); i++) {
-                //Log.v("sending To RabbitMq","Here : "+saveValuesList.get(i).getRequestString().toString());
-                channel.basicPublish("LogData", "AppLogcatLogs", null, saveValuesList.get(i).getRequestString().toString().getBytes());
-                dbHandler.deleteData(saveValuesList.get(i).getId());
-            }
-            saveValuesList = dbHandler.getPackets();
-
-            if (channel != null) {
-                if (channel.isOpen()) {
-                    channel.close();
+                if (channel != null) {
+                    if (channel.isOpen()) {
+                        channel.close();
+                    }
+                }
+                if (connection != null) {
+                    if (connection.isOpen()) {
+                        connection.close();
+                    }
                 }
             }
-            if (connection != null) {
-                if (connection.isOpen()) {
-                    connection.close();
-                }
+            else {
+                saveValuesList=dbHandler.getPackets();
             }
         }
         catch (Exception e){
             e.printStackTrace();
         }
-        //saveValuesList = dbHandler.getPackets();
     }
 
-    private static Thread.UncaughtExceptionHandler handleAppCrash = new Thread.UncaughtExceptionHandler() {
+    private Thread.UncaughtExceptionHandler handleAppCrash = new Thread.UncaughtExceptionHandler() {
                 @Override
                 public void uncaughtException(Thread thread, Throwable ex) {
                     ex.printStackTrace();
-                    Toast.makeText(mCtx,"Coming Inside UncaughtExceptionHandler",Toast.LENGTH_SHORT).show();
+                    batteryLevel();
+                    appDeviceInfo = PrefUtilsInfo.getAppDeviceInfo(MyLogcat.this);
                     StringWriter errors = new StringWriter();
                     ex.printStackTrace(new PrintWriter(errors));
                     LinkedHashMap<String, String> params = new LinkedHashMap<>();
                     params.put("logString", errors.toString());
-                    params.put("unitno", IMEINO1);
+                    params.put("packageName",appDeviceInfo.getPackageName());
+                    params.put("appName",appDeviceInfo.getAppName());
+                    params.put("appVersion",appDeviceInfo.getAppVersion());
+                    params.put("apiLevel",appDeviceInfo.getApiLevel());
+                    params.put("manufacturer",appDeviceInfo.getManufacturer());
+                    params.put("deviceModel",appDeviceInfo.getDeviceModel());
+                    params.put("androidOS",appDeviceInfo.getAndroidOS());
+                    params.put("brand",appDeviceInfo.getBrand());
+                    params.put("unitno", appDeviceInfo.getUnitNo());
+                    params.put("carrierName", appDeviceInfo.getCarrierName());
+                    params.put("batteryLevel", batteryLevel);
+
+                    String currentDateTimeString = DateFormat.getDateTimeInstance().format(new Date());
+                    params.put("currenttime", currentDateTimeString);
+                    params.put("chargePlug", String.valueOf(chargePlug));
+
                     jsonObject = new JSONObject(params);
                     savePollingDateToDB(jsonObject);
                 }
@@ -259,5 +344,26 @@ public class MyLogcat extends Service{
         catch (Exception e){
             e.printStackTrace();
         }
+    }
+
+    BroadcastReceiver batteryLevelReceiver;
+    int count=0;
+    static String batteryLevel;
+    static int chargePlug;
+    void batteryLevel(){
+        IntentFilter batteryLevelFilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        this.registerReceiver(batteryLevelReceiver, batteryLevelFilter);
+        batteryLevelReceiver = new BroadcastReceiver() {
+            public void onReceive(Context context, Intent intent) {
+                int rawlevel = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+                int level = -1;
+                if (rawlevel >= 0 && scale > 0)
+                    level = (rawlevel * 100) / scale;
+
+                batteryLevel = String.valueOf(level);
+                chargePlug = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1);
+            }
+        };
     }
 }
